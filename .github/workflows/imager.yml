@@ -1,0 +1,200 @@
+name: imager
+
+# Builds a custom Talos imager against the patched kernel, then uses it to
+# produce the rpi_5 metal image (workflow artifact) and installer (pushed to
+# ghcr.io, referenced by machine.install.image).
+#
+# Checks out UPSTREAM siderolabs/talos at `talos_version` — no fork needed,
+# since the only customisation is PKG_KERNEL.
+#
+# Runs entirely on arm64 runners: the `images` job executes the imager binary,
+# so it must match the runner architecture.
+#
+# Packages produced (all must be PUBLIC — the imager pulls anonymously from
+# inside its container, and the Pi pulls the installer with no credentials):
+#   <owner>/installer-base   build-time base, referenced by the imager profile
+#   <owner>/imager           the imager itself
+#   <owner>/installer        pinned in machine.install.image
+
+on:
+  workflow_dispatch:
+    inputs:
+      talos_version:
+        description: "Upstream Talos tag to build from (must be valid semver)"
+        required: true
+        type: string
+        default: "v1.13.8"
+        options:
+          - "v1.13.8"
+          - "v1.13.9"
+      kernel_image:
+        description: "Multi-arch kernel manifest from the pkgs workflow"
+        required: true
+        type: string
+        default: "ghcr.io/hoefling/kernel:9b0064c058e2e0d08839c2039ef946a18f13f1a5"
+      overlay_image:
+        description: "rpi_5 overlay from Image Factory, pinned by digest (currently v0.2.0)"
+        required: true
+        type: string
+        default: "ghcr.io/siderolabs/sbc-raspberrypi@sha256:f6f5504c0c2386e287f4ba29129e5099abaecdab3b8eb96b53aa53a163283c24"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # Keep in sync with the known-good schematic c7165afe...
+  EXTENSIONS: >-
+    --system-extension-image ghcr.io/siderolabs/vc4:${{ inputs.talos_version || 'v1.13.8' }}
+    --system-extension-image ghcr.io/siderolabs/iscsi-tools:v0.2.0
+    --system-extension-image ghcr.io/siderolabs/util-linux-tools:2.42.2
+
+jobs:
+  imager:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      image: ${{ steps.alias.outputs.image }}
+      talos_sha: ${{ steps.rev.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: siderolabs/talos
+          ref: ${{ inputs.talos_version }}
+          fetch-depth: 0
+
+      - name: Record upstream commit
+        id: rev
+        run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      # The imager bakes ghcr.io/<owner>/installer-base:<TAG> into its profile,
+      # so that image has to exist in the same namespace with the same TAG.
+      - name: Build installer-base
+        run: |
+          make installer-base \
+            PLATFORM=linux/arm64 \
+            PUSH=true \
+            REGISTRY=${{ env.REGISTRY }} \
+            USERNAME=${{ steps.owner.outputs.name }} \
+            TAG=${{ inputs.talos_version }} \
+            PKG_KERNEL=${{ inputs.kernel_image }}
+
+      # TAG becomes the Talos version embedded in the imager profile, and is
+      # parsed as semver during extension validation — it must stay clean.
+      - name: Build imager
+        run: |
+          make imager \
+            PLATFORM=linux/arm64 \
+            PUSH=true \
+            REGISTRY=${{ env.REGISTRY }} \
+            USERNAME=${{ steps.owner.outputs.name }} \
+            TAG=${{ inputs.talos_version }} \
+            PKG_KERNEL=${{ inputs.kernel_image }}
+
+      # Registry-side re-tagging: no pull, no re-push.
+      - name: Tag imager aliases
+        id: alias
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/imager"
+          V="${{ inputs.talos_version }}"
+          SHA="${{ steps.rev.outputs.sha }}"
+          RUN="${{ github.run_number }}"
+
+          docker buildx imagetools create \
+            -t "${IMG}:${V}-rp1pwm-${RUN}" \
+            -t "${IMG}:${V}-${SHA}" \
+            -t "${IMG}:${V}-rp1pwm" \
+            "${IMG}:${V}"
+
+          echo "image=${IMG}:${V}-rp1pwm-${RUN}" >> "$GITHUB_OUTPUT"
+
+      - name: Show manifest
+        run: |
+          docker buildx imagetools inspect ${{ steps.alias.outputs.image }}
+
+  images:
+    needs: imager
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Install crane
+        run: |
+          go install github.com/google/go-containerregistry/cmd/crane@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # The mounted docker config lets the imager's internal registry client
+      # authenticate; harmless once the packages are public.
+      - name: Generate metal image
+        run: |
+          mkdir -p _out
+          docker run --rm -t --privileged \
+            -v "$PWD/_out:/out" -v /dev:/dev \
+            -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
+            ${{ needs.imager.outputs.image }} metal \
+            --arch arm64 \
+            --overlay-name rpi_5 \
+            --overlay-image ${{ inputs.overlay_image }} \
+            ${{ env.EXTENSIONS }}
+          ls -lh _out
+
+      - name: Generate installer
+        run: |
+          docker run --rm -t --privileged \
+            -v "$PWD/_out:/out" -v /dev:/dev \
+            -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
+            ${{ needs.imager.outputs.image }} installer \
+            --arch arm64 \
+            --overlay-name rpi_5 \
+            --overlay-image ${{ inputs.overlay_image }} \
+            ${{ env.EXTENSIONS }}
+          ls -lh _out
+
+      - name: Push installer
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/installer"
+          V="${{ inputs.talos_version }}"
+          SHA="${{ needs.imager.outputs.talos_sha }}"
+          RUN="${{ github.run_number }}"
+
+          crane push _out/installer-arm64.tar "${IMG}:${V}-rp1pwm-${RUN}"
+          crane tag "${IMG}:${V}-rp1pwm-${RUN}" "${V}-${SHA}"
+          crane tag "${IMG}:${V}-rp1pwm-${RUN}" "${V}-rp1pwm"
+
+          echo "Pin this in machine.install.image:"
+          echo "  ${IMG}:${V}-rp1pwm-${RUN}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metal-rpi5-${{ inputs.talos_version }}-rp1pwm-${{ github.run_number }}
+          # imager chose .zst as outFormat in the last run — glob covers either
+          path: _out/metal-arm64.raw.*
+          retention-days: 30
