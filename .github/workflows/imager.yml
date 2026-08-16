@@ -159,7 +159,7 @@ jobs:
           docker run --rm -t --privileged \
             -v "$PWD/_out:/out" -v /dev:/dev \
             -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" \
-            ${{ needs.imager.outputs.image }} metal \
+            ${{ needs.imager.outputs.image }} rpi_5 \
             --arch arm64 \
             --overlay-name rpi_5 \
             --overlay-image ${{ inputs.overlay_image }} \
