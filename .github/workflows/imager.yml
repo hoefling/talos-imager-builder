@@ -31,7 +31,7 @@ on:
         description: "Multi-arch kernel manifest from the pkgs workflow"
         required: true
         type: string
-        default: "ghcr.io/hoefling/kernel:9b0064c058e2e0d08839c2039ef946a18f13f1a5"
+        default: "ghcr.io/hoefling/kernel:73e01beda6a194b4878a69fa204fd0dfa3cdc2de"
       overlay_image:
         description: "rpi_5 overlay from Image Factory, pinned by digest (currently v0.2.0)"
         required: true
