@@ -163,6 +163,7 @@ jobs:
             --arch arm64 \
             --overlay-name rpi_5 \
             --overlay-image ${{ inputs.overlay_image }} \
+            --overlay-option configTxtAppend="dtparam=fan_temp0=25000" \
             ${{ env.EXTENSIONS }}
           ls -lh _out
 
@@ -175,6 +176,7 @@ jobs:
             --arch arm64 \
             --overlay-name rpi_5 \
             --overlay-image ${{ inputs.overlay_image }} \
+            --overlay-option configTxtAppend="dtparam=fan_temp0=25000" \
             ${{ env.EXTENSIONS }}
           ls -lh _out
 
