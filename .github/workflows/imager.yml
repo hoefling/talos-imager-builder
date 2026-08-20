@@ -1,57 +1,120 @@
 name: imager
 
 # Builds a custom Talos imager against the patched kernel, then uses it to
-# produce the rpi_5 metal image (workflow artifact) and installer (pushed to
-# ghcr.io, referenced by machine.install.image).
+# produce the rpi_5 metal image and installer for Raspberry Pi 5.
 #
-# Checks out UPSTREAM siderolabs/talos at `talos_version` — no fork needed,
-# since the only customisation is PKG_KERNEL.
+# Versions live in versions.yml and are bumped by Renovate. A push to that
+# file triggers a build; workflow_dispatch inputs override it for one-offs.
 #
-# Runs entirely on arm64 runners: the `images` job executes the imager binary,
-# so it must match the runner architecture.
+# Checks out UPSTREAM siderolabs/talos — no fork needed, since the only
+# customisation is PKG_KERNEL.
 #
-# Packages produced (all must be PUBLIC — the imager pulls anonymously from
-# inside its container, and the Pi pulls the installer with no credentials):
-#   <owner>/installer-base   build-time base, referenced by the imager profile
-#   <owner>/imager           the imager itself
-#   <owner>/installer        pinned in machine.install.image
+# Runs on arm64 runners throughout: the `images` job executes the imager
+# binary, so it must match the runner architecture.
+#
+# All ghcr packages must be PUBLIC — the imager pulls anonymously from
+# inside its container, and the Pi pulls the installer with no credentials.
 
 on:
+  push:
+    paths:
+      - versions.yml
+      - .github/workflows/imager.yml
   workflow_dispatch:
     inputs:
       talos_version:
-        description: "Upstream Talos tag to build from (must be valid semver)"
-        required: true
+        description: "Override Talos tag (blank = use versions.yml)"
+        required: false
         type: string
-        default: "v1.13.8"
-        options:
-          - "v1.13.8"
-          - "v1.13.9"
+        default: ""
       kernel_image:
-        description: "Multi-arch kernel manifest from the pkgs workflow"
-        required: true
+        description: "Override kernel manifest (blank = use versions.yml)"
+        required: false
         type: string
-        default: "ghcr.io/hoefling/kernel:73e01beda6a194b4878a69fa204fd0dfa3cdc2de"
+        default: ""
       overlay_image:
-        description: "rpi_5 overlay from Image Factory, pinned by digest (currently v0.2.0)"
-        required: true
+        description: "Override rpi_5 overlay (blank = use versions.yml)"
+        required: false
         type: string
-        default: "ghcr.io/siderolabs/sbc-raspberrypi@sha256:f6f5504c0c2386e287f4ba29129e5099abaecdab3b8eb96b53aa53a163283c24"
+        default: ""
 
 permissions:
-  contents: read
+  contents: write        # write: needed to publish the Release
   packages: write
 
 env:
   REGISTRY: ghcr.io
-  # Keep in sync with the known-good schematic c7165afe...
-  EXTENSIONS: >-
-    --system-extension-image ghcr.io/siderolabs/vc4:${{ inputs.talos_version || 'v1.13.8' }}
-    --system-extension-image ghcr.io/siderolabs/iscsi-tools:v0.2.0
-    --system-extension-image ghcr.io/siderolabs/util-linux-tools:2.42.2
 
 jobs:
+  config:
+    runs-on: ubuntu-latest
+    outputs:
+      talos_version: ${{ steps.cfg.outputs.talos_version }}
+      kernel_image: ${{ steps.cfg.outputs.kernel_image }}
+      overlay_image: ${{ steps.cfg.outputs.overlay_image }}
+      extensions: ${{ steps.cfg.outputs.extensions }}
+      config_txt_append: ${{ steps.cfg.outputs.config_txt_append }}
+      owner: ${{ steps.cfg.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve configuration
+        id: cfg
+        run: |
+          set -euo pipefail
+
+          # Inputs win over versions.yml so a dispatch can pin anything.
+          TALOS="${{ inputs.talos_version }}"
+          [ -n "$TALOS" ] || TALOS=$(yq -r '.talos_version' versions.yml)
+
+          KERNEL="${{ inputs.kernel_image }}"
+          [ -n "$KERNEL" ] || KERNEL=$(yq -r '.kernel_image' versions.yml)
+
+          OVERLAY="${{ inputs.overlay_image }}"
+          [ -n "$OVERLAY" ] || OVERLAY=$(yq -r '.overlay_image' versions.yml)
+
+          # Extensions and the config.txt append line also live in versions.yml
+          # so Renovate can bump extension versions too.
+          EXT=$(yq -r '.extensions[] | "--system-extension-image " + .' versions.yml | tr '\n' ' ')
+          APPEND=$(yq -r '.config_txt_append' versions.yml)
+
+          {
+            echo "talos_version=${TALOS}"
+            echo "kernel_image=${KERNEL}"
+            echo "overlay_image=${OVERLAY}"
+            echo "extensions=${EXT}"
+            echo "config_txt_append=${APPEND}"
+            echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Build configuration"
+            echo ""
+            echo "| key | value |"
+            echo "|---|---|"
+            echo "| talos | \`${TALOS}\` |"
+            echo "| kernel | \`${KERNEL}\` |"
+            echo "| overlay | \`${OVERLAY}\` |"
+            echo "| configTxtAppend | \`${APPEND}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify kernel image exists and is multi-arch
+        run: |
+          set -euo pipefail
+          go install github.com/google/go-containerregistry/cmd/crane@latest
+          export PATH="$PATH:$(go env GOPATH)/bin"
+
+          KERNEL='${{ steps.cfg.outputs.kernel_image }}'
+          # Fails loudly here rather than 40 minutes into the imager build.
+          PLATFORMS=$(crane manifest "$KERNEL" | jq -r '.manifests[].platform.architecture' | sort | tr '\n' ' ')
+          echo "kernel platforms: ${PLATFORMS}"
+          case "$PLATFORMS" in
+            *amd64*arm64*) ;;
+            *) echo "::error::kernel manifest is not multi-arch: ${PLATFORMS}"; exit 1 ;;
+          esac
+
   imager:
+    needs: config
     runs-on: ubuntu-24.04-arm
     outputs:
       image: ${{ steps.alias.outputs.image }}
@@ -60,12 +123,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: siderolabs/talos
-          ref: ${{ inputs.talos_version }}
+          ref: ${{ needs.config.outputs.talos_version }}
           fetch-depth: 0
 
       - name: Record upstream commit
         id: rev
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Cross-check: the kernel must have been built from the pkgs tag this
+      # Talos release pins, or the imager assembles mismatched components.
+      - name: Report pinned pkgs tag
+        run: |
+          PKGS=$(grep '^PKGS ?=' Makefile | awk '{print $3}')
+          echo "Talos ${{ needs.config.outputs.talos_version }} pins PKGS=${PKGS}" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Free disk space
         run: |
@@ -83,23 +154,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Lowercase owner
-        id: owner
-        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
       # The imager bakes ghcr.io/<owner>/installer-base:<TAG> into its profile,
-      # so that image has to exist in the same namespace with the same TAG.
+      # so that image must exist in the same namespace with the same TAG.
       - name: Build installer-base
         run: |
           make installer-base \
             PLATFORM=linux/arm64 \
             PUSH=true \
             REGISTRY=${{ env.REGISTRY }} \
-            USERNAME=${{ steps.owner.outputs.name }} \
-            TAG=${{ inputs.talos_version }} \
-            PKG_KERNEL=${{ inputs.kernel_image }}
+            USERNAME=${{ needs.config.outputs.owner }} \
+            TAG=${{ needs.config.outputs.talos_version }} \
+            PKG_KERNEL=${{ needs.config.outputs.kernel_image }}
 
-      # TAG becomes the Talos version embedded in the imager profile, and is
+      # TAG becomes the Talos version embedded in the imager profile and is
       # parsed as semver during extension validation — it must stay clean.
       - name: Build imager
         run: |
@@ -107,16 +174,16 @@ jobs:
             PLATFORM=linux/arm64 \
             PUSH=true \
             REGISTRY=${{ env.REGISTRY }} \
-            USERNAME=${{ steps.owner.outputs.name }} \
-            TAG=${{ inputs.talos_version }} \
-            PKG_KERNEL=${{ inputs.kernel_image }}
+            USERNAME=${{ needs.config.outputs.owner }} \
+            TAG=${{ needs.config.outputs.talos_version }} \
+            PKG_KERNEL=${{ needs.config.outputs.kernel_image }}
 
       # Registry-side re-tagging: no pull, no re-push.
       - name: Tag imager aliases
         id: alias
         run: |
-          IMG="${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/imager"
-          V="${{ inputs.talos_version }}"
+          IMG="${{ env.REGISTRY }}/${{ needs.config.outputs.owner }}/imager"
+          V="${{ needs.config.outputs.talos_version }}"
           SHA="${{ steps.rev.outputs.sha }}"
           RUN="${{ github.run_number }}"
 
@@ -129,12 +196,13 @@ jobs:
           echo "image=${IMG}:${V}-rp1pwm-${RUN}" >> "$GITHUB_OUTPUT"
 
       - name: Show manifest
-        run: |
-          docker buildx imagetools inspect ${{ steps.alias.outputs.image }}
+        run: docker buildx imagetools inspect ${{ steps.alias.outputs.image }}
 
   images:
-    needs: imager
+    needs: [config, imager]
     runs-on: ubuntu-24.04-arm
+    outputs:
+      installer: ${{ steps.push.outputs.installer }}
     steps:
       - uses: docker/login-action@v3
         with:
@@ -142,17 +210,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Lowercase owner
-        id: owner
-        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-
       - name: Install crane
         run: |
           go install github.com/google/go-containerregistry/cmd/crane@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      # The mounted docker config lets the imager's internal registry client
-      # authenticate; harmless once the packages are public.
+      # NOTE: the positional argument is the overlay's own profile (rpi_5),
+      # NOT `metal`. With `metal` the Pi-specific boot artifacts (config.txt,
+      # u-boot.bin, the DTBs) are never written and the card will not boot.
       - name: Generate metal image
         run: |
           mkdir -p _out
@@ -162,9 +227,9 @@ jobs:
             ${{ needs.imager.outputs.image }} rpi_5 \
             --arch arm64 \
             --overlay-name rpi_5 \
-            --overlay-image ${{ inputs.overlay_image }} \
-            --overlay-option configTxtAppend="dtparam=fan_temp0=25000" \
-            ${{ env.EXTENSIONS }}
+            --overlay-image ${{ needs.config.outputs.overlay_image }} \
+            --overlay-option configTxtAppend=${{ needs.config.outputs.config_txt_append }} \
+            ${{ needs.config.outputs.extensions }}
           ls -lh _out
 
       - name: Generate installer
@@ -175,15 +240,17 @@ jobs:
             ${{ needs.imager.outputs.image }} installer \
             --arch arm64 \
             --overlay-name rpi_5 \
-            --overlay-image ${{ inputs.overlay_image }} \
-            --overlay-option configTxtAppend="dtparam=fan_temp0=25000" \
-            ${{ env.EXTENSIONS }}
+            --overlay-image ${{ needs.config.outputs.overlay_image }} \
+            --overlay-option configTxtAppend=${{ needs.config.outputs.config_txt_append }} \
+            ${{ needs.config.outputs.extensions }}
           ls -lh _out
 
       - name: Push installer
+        id: push
         run: |
-          IMG="${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/installer"
-          V="${{ inputs.talos_version }}"
+          set -euo pipefail
+          IMG="${{ env.REGISTRY }}/${{ needs.config.outputs.owner }}/installer"
+          V="${{ needs.config.outputs.talos_version }}"
           SHA="${{ needs.imager.outputs.talos_sha }}"
           RUN="${{ github.run_number }}"
 
@@ -191,12 +258,40 @@ jobs:
           crane tag "${IMG}:${V}-rp1pwm-${RUN}" "${V}-${SHA}"
           crane tag "${IMG}:${V}-rp1pwm-${RUN}" "${V}-rp1pwm"
 
-          echo "Pin this in machine.install.image:"
-          echo "  ${IMG}:${V}-rp1pwm-${RUN}"
+          echo "installer=${IMG}:${V}-rp1pwm-${RUN}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      # Confirms the fan workaround travels with the installer, so it is
+      # re-applied on every `talosctl upgrade` rather than only at flash time.
+      - name: Verify configTxtAppend landed in the installer
+        run: |
+          set -euo pipefail
+          OPTS=$(crane export "${{ steps.push.outputs.installer }}" - | tar xO overlay/extra-options)
+          echo "$OPTS"
+          echo "$OPTS" | grep -q 'configTxtAppend' \
+            || { echo "::error::configTxtAppend missing from installer"; exit 1; }
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
-          name: metal-rpi5-${{ inputs.talos_version }}-rp1pwm-${{ github.run_number }}
-          # imager chose .zst as outFormat in the last run — glob covers either
-          path: _out/metal-arm64.raw.*
-          retention-days: 30
+          tag_name: ${{ needs.config.outputs.talos_version }}-rp1pwm-${{ github.run_number }}
+          name: "Talos ${{ needs.config.outputs.talos_version }} rpi_5 (RP1 PWM) #${{ github.run_number }}"
+          files: _out/metal-arm64.raw.*
+          body: |
+            Raspberry Pi 5 image with the RP1 PWM driver (v7 series) and the
+            `dtparam=fan_temp0` workaround baked into `config.txt`.
+
+            **Flash:**
+            ```
+            xz -dc metal-arm64.raw.xz | sudo dd of=/dev/<sdcard> bs=4M status=progress conv=fsync
+            ```
+
+            **Pin in `machine.install.image`:**
+            ```
+            ${{ steps.push.outputs.installer }}
+            ```
+
+            | component | version |
+            |---|---|
+            | talos | `${{ needs.config.outputs.talos_version }}` |
+            | kernel | `${{ needs.config.outputs.kernel_image }}` |
+            | overlay | `${{ needs.config.outputs.overlay_image }}` |

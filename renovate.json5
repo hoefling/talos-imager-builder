@@ -1,0 +1,18 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  customManagers: [{
+    customType: "regex",
+    managerFilePatterns: ["/^versions\\.yml$/"],
+    matchStrings: [
+      "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*(?<currentValue>\\S+)"
+    ],
+  }],
+  packageRules: [
+    // your own kernel — safe to merge automatically
+    { matchPackageNames: ["ghcr.io/hoefling/kernel"], automerge: true },
+    // Talos bumps need the pkgs rebase first — never automerge
+    { matchPackageNames: ["siderolabs/talos"], automerge: false,
+      prBodyNotes: ["Rebase rp1-pwm-1.13 onto the matching pkgs tag and let the kernel build finish before merging."] },
+  ],
+}
