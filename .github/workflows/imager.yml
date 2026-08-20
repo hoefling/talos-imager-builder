@@ -56,7 +56,7 @@ jobs:
       config_txt_append: ${{ steps.cfg.outputs.config_txt_append }}
       owner: ${{ steps.cfg.outputs.owner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve configuration
         id: cfg
@@ -120,7 +120,7 @@ jobs:
       image: ${{ steps.alias.outputs.image }}
       talos_sha: ${{ steps.rev.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: siderolabs/talos
           ref: ${{ needs.config.outputs.talos_version }}
