@@ -271,7 +271,7 @@ jobs:
             || { echo "::error::configTxtAppend missing from installer"; exit 1; }
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.config.outputs.talos_version }}-rp1pwm-${{ github.run_number }}
           name: "Talos ${{ needs.config.outputs.talos_version }} rpi_5 (RP1 PWM) #${{ github.run_number }}"
