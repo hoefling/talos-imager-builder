@@ -1,18 +1,76 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
-  extends: ["config:recommended"],
-  customManagers: [{
-    customType: "regex",
-    managerFilePatterns: ["/^versions\\.yml$/"],
-    matchStrings: [
-      "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*(?<currentValue>\\S+)"
-    ],
-  }],
-  packageRules: [
-    // your own kernel — safe to merge automatically
-    { matchPackageNames: ["ghcr.io/hoefling/kernel"], automerge: true },
-    // Talos bumps need the pkgs rebase first — never automerge
-    { matchPackageNames: ["siderolabs/talos"], automerge: false,
-      prBodyNotes: ["Rebase rp1-pwm-1.13 onto the matching pkgs tag and let the kernel build finish before merging."] },
+  extends: [
+    "config:recommended",
+    ":dependencyDashboard",
   ],
+
+  // Everything this repo builds from lives in one file.
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^versions\\.yaml$/"],
+      // Matches a `# renovate: datasource=... depName=...` comment followed by
+      // either `key: value` or a `- value` list item on the next line.
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>[^\\s]+) depName=(?<depName>[^\\s]+)(?: versioning=(?<versioning>[^\\s]+))?\\s+(?:[\\w_]+:\\s*|-\\s+)(?<depNameSuffixIgnored>[^\\s:@]+)[:@](?<currentValue>[^\\s@]+)",
+        "# renovate: datasource=(?<datasource>[^\\s]+) depName=(?<depName>[^\\s]+)(?: versioning=(?<versioning>[^\\s]+))?\\s+[\\w_]+:\\s*(?<currentValue>[^\\s]+)",
+      ],
+      datasourceTemplate: "{{{datasource}}}",
+      versioningTemplate: "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}",
+    },
+  ],
+
+  packageRules: [
+    {
+      // A Talos bump is only actionable once the pkgs fork has been rebased
+      // and a matching kernel tag pushed. Never automerge; the PR is the
+      // reminder that the rebase has to happen first.
+      matchPackageNames: ["siderolabs/talos"],
+      automerge: false,
+      prBodyNotes: [
+        "**Before merging:** rebase `rp1-pwm-1.13` in the pkgs fork onto the pkgs commit this Talos release pins (`grep '^PKGS ?=' Makefile`), tag it `v<talos-version>-1`, and wait for the kernel workflow to publish the image.",
+      ],
+    },
+    {
+      // Own kernel builds. The `-N` suffix is a semver prerelease identifier,
+      // so unstable versions must be allowed or nothing is ever offered.
+      matchPackageNames: ["ghcr.io/hoefling/kernel"],
+      ignoreUnstable: false,
+      automerge: false,
+    },
+    {
+      // Talos and kernel move together — one PR so they cannot be merged
+      // half-applied, which would build an imager against a mismatched kernel.
+      matchPackageNames: ["siderolabs/talos", "ghcr.io/hoefling/kernel"],
+      groupName: "talos + kernel",
+    },
+    {
+      // Sidero-published components. Safe to take on their own.
+      matchPackageNames: [
+        "ghcr.io/siderolabs/sbc-raspberrypi",
+        "ghcr.io/siderolabs/vc4",
+        "ghcr.io/siderolabs/iscsi-tools",
+        "ghcr.io/siderolabs/util-linux-tools",
+      ],
+      groupName: "sidero overlay + extensions",
+      automerge: false,
+    },
+    {
+      // Pin GitHub Actions to SHAs so a compromised tag cannot alter builds.
+      matchManagers: ["github-actions"],
+      pinDigests: true,
+      groupName: "github actions",
+      automerge: true,
+    },
+  ],
+
+  // A merged PR triggers the imager build, so avoid a queue of half-applied
+  // bumps landing at once.
+  prConcurrentLimit: 3,
+  prHourlyLimit: 2,
+
+  // Weekly is plenty; Talos patch releases are not that frequent.
+  schedule: ["* 0-6 * * 1"],
+  timezone: "Europe/Berlin",
 }
