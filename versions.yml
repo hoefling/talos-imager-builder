@@ -2,12 +2,12 @@
 # Renovate bumps these; a push to this file triggers a build.
 
 # renovate: datasource=github-releases depName=siderolabs/talos
-talos_version: v1.13.8
+talos_version: v1.13.9
 
 # Own kernel build. Pinned by digest on a floating tag so Renovate bumps the
 # digest whenever the pkgs workflow republishes `rp1pwm`.
 # renovate: datasource=docker depName=ghcr.io/hoefling/kernel versioning=semver
-kernel_image: ghcr.io/hoefling/kernel:v1.13.8-1
+kernel_image: ghcr.io/hoefling/kernel:v1.13.9-1
 
 # renovate: datasource=docker depName=ghcr.io/siderolabs/sbc-raspberrypi
 overlay_image: ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0@sha256:f6f5504c0c2386e287f4ba29129e5099abaecdab3b8eb96b53aa53a163283c24
