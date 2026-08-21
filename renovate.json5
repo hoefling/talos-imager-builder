@@ -38,6 +38,8 @@
       matchPackageNames: ["ghcr.io/hoefling/kernel"],
       ignoreUnstable: false,
       automerge: false,
+      // Per-arch build tags must never be selected over the merged manifest.
+      allowedVersions: "!/-(amd64|arm64)$/",
     },
     {
       // Talos and kernel move together — one PR so they cannot be merged
