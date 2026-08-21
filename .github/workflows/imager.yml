@@ -3,23 +3,30 @@ name: imager
 # Builds a custom Talos imager against the patched kernel, then uses it to
 # produce the rpi_5 metal image and installer for Raspberry Pi 5.
 #
-# Versions live in versions.yml and are bumped by Renovate. A push to that
-# file triggers a build; workflow_dispatch inputs override it for one-offs.
+# Versions live in versions.yml and are bumped by Renovate.
+#   pull_request -> validation only (cheap, catches a bad kernel/Talos pairing
+#                   before merge)
+#   push to main -> full build and publish
+#   dispatch     -> full build with optional overrides
 #
 # Checks out UPSTREAM siderolabs/talos — no fork needed, since the only
 # customisation is PKG_KERNEL.
 #
-# Runs on arm64 runners throughout: the `images` job executes the imager
-# binary, so it must match the runner architecture.
+# The imager and images jobs run on arm64 runners: the images job executes
+# the imager binary, so it must match the runner architecture.
 #
-# All ghcr packages must be PUBLIC — the imager pulls anonymously from
-# inside its container, and the Pi pulls the installer with no credentials.
+# All ghcr packages must be PUBLIC — the imager pulls anonymously from inside
+# its container, and the Pi pulls the installer with no credentials.
 
 on:
   push:
     branches: [main]
     paths:
-      - versions.yaml
+      - versions.yml
+      - .github/workflows/imager.yml
+  pull_request:
+    paths:
+      - versions.yml
       - .github/workflows/imager.yml
   workflow_dispatch:
     inputs:
@@ -40,13 +47,20 @@ on:
         default: ""
 
 permissions:
-  contents: write        # write: needed to publish the Release
-  packages: write
+  contents: read
+  packages: read
+
+concurrency:
+  group: imager-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Runs on every trigger, including pull requests. Seconds of runtime, and
+  # it catches "bumped Talos but forgot to tag the kernel" while the PR is
+  # still open.
   config:
     runs-on: ubuntu-latest
     outputs:
@@ -57,14 +71,15 @@ jobs:
       config_txt_append: ${{ steps.cfg.outputs.config_txt_append }}
       owner: ${{ steps.cfg.outputs.owner }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v4
 
       - name: Resolve configuration
         id: cfg
         run: |
           set -euo pipefail
 
-          # Inputs win over versions.yml so a dispatch can pin anything.
+          # Dispatch inputs win over versions.yml so a manual run can pin
+          # anything without editing the file.
           TALOS="${{ inputs.talos_version }}"
           [ -n "$TALOS" ] || TALOS=$(yq -r '.talos_version' versions.yml)
 
@@ -74,8 +89,6 @@ jobs:
           OVERLAY="${{ inputs.overlay_image }}"
           [ -n "$OVERLAY" ] || OVERLAY=$(yq -r '.overlay_image' versions.yml)
 
-          # Extensions and the config.txt append line also live in versions.yml
-          # so Renovate can bump extension versions too.
           EXT=$(yq -r '.extensions[] | "--system-extension-image " + .' versions.yml | tr '\n' ' ')
           APPEND=$(yq -r '.config_txt_append' versions.yml)
 
@@ -99,29 +112,69 @@ jobs:
             echo "| configTxtAppend | \`${APPEND}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Install crane
+        run: |
+          go install github.com/google/go-containerregistry/cmd/crane@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Fails here in seconds rather than 40 minutes into the imager build.
       - name: Verify kernel image exists and is multi-arch
         run: |
           set -euo pipefail
-          go install github.com/google/go-containerregistry/cmd/crane@latest
-          export PATH="$PATH:$(go env GOPATH)/bin"
-
           KERNEL='${{ steps.cfg.outputs.kernel_image }}'
-          # Fails loudly here rather than 40 minutes into the imager build.
-          PLATFORMS=$(crane manifest "$KERNEL" | jq -r '.manifests[].platform.architecture' | sort | tr '\n' ' ')
+
+          crane manifest "$KERNEL" > /tmp/manifest.json \
+            || { echo "::error::kernel image not found: ${KERNEL} — was the pkgs tag pushed?"; exit 1; }
+
+          PLATFORMS=$(jq -r '.manifests[].platform.architecture' /tmp/manifest.json | sort | tr '\n' ' ')
           echo "kernel platforms: ${PLATFORMS}"
           case "$PLATFORMS" in
             *amd64*arm64*) ;;
             *) echo "::error::kernel manifest is not multi-arch: ${PLATFORMS}"; exit 1 ;;
           esac
 
+          # Provenance recorded by the pkgs workflow; compared below against
+          # what this Talos release actually pins.
+          BASE=$(jq -r '.annotations["dev.hoefling.pkgs-base"] // "unknown"' /tmp/manifest.json)
+          echo "kernel built from pkgs base: ${BASE}"
+          echo "| kernel pkgs base | \`${BASE}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      # Cross-check the pairing that caused mismatched-component builds before:
+      # the kernel must come from the pkgs tag this Talos release pins.
+      - name: Compare pkgs base against Talos PKGS
+        run: |
+          set -euo pipefail
+          TALOS='${{ steps.cfg.outputs.talos_version }}'
+          BASE=$(jq -r '.annotations["dev.hoefling.pkgs-base"] // "unknown"' /tmp/manifest.json)
+
+          PKGS=$(gh api "repos/siderolabs/talos/contents/Makefile?ref=${TALOS}" --jq '.content' \
+                   | base64 -d | grep '^PKGS ?=' | awk '{print $3}')
+          echo "Talos ${TALOS} pins PKGS=${PKGS}"
+
+          if [ "$BASE" = "unknown" ]; then
+            echo "::warning::kernel image carries no pkgs-base annotation; cannot cross-check"
+          elif [ "$BASE" != "$PKGS" ]; then
+            # A warning rather than an error: `git describe` formatting can
+            # differ from the Makefile string in harmless ways.
+            echo "::warning::kernel built from ${BASE}, Talos ${TALOS} pins ${PKGS}"
+          else
+            echo "pkgs base matches"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   imager:
     needs: config
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
     outputs:
       image: ${{ steps.alias.outputs.image }}
       talos_sha: ${{ steps.rev.outputs.sha }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v4
         with:
           repository: siderolabs/talos
           ref: ${{ needs.config.outputs.talos_version }}
@@ -131,14 +184,6 @@ jobs:
         id: rev
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Cross-check: the kernel must have been built from the pkgs tag this
-      # Talos release pins, or the imager assembles mismatched components.
-      - name: Report pinned pkgs tag
-        run: |
-          PKGS=$(grep '^PKGS ?=' Makefile | awk '{print $3}')
-          echo "Talos ${{ needs.config.outputs.talos_version }} pins PKGS=${PKGS}" \
-            >> "$GITHUB_STEP_SUMMARY"
-
       - name: Free disk space
         run: |
           df -h /
@@ -147,9 +192,9 @@ jobs:
           sudo docker image prune --all --force
           df -h /
 
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -201,11 +246,13 @@ jobs:
 
   images:
     needs: [config, imager]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
-    outputs:
-      installer: ${{ steps.push.outputs.installer }}
+    permissions:
+      contents: write        # publish the Release
+      packages: write
     steps:
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -272,7 +319,7 @@ jobs:
             || { echo "::error::configTxtAppend missing from installer"; exit 1; }
 
       - name: Publish release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.config.outputs.talos_version }}-rp1pwm-${{ github.run_number }}
           name: "Talos ${{ needs.config.outputs.talos_version }} rpi_5 (RP1 PWM) #${{ github.run_number }}"
