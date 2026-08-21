@@ -17,8 +17,9 @@ name: imager
 
 on:
   push:
+    branches: [main]
     paths:
-      - versions.yml
+      - versions.yaml
       - .github/workflows/imager.yml
   workflow_dispatch:
     inputs:
