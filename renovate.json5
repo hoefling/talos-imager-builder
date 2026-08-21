@@ -9,7 +9,7 @@
   customManagers: [
     {
       customType: "regex",
-      managerFilePatterns: ["/^versions\\.yaml$/"],
+      managerFilePatterns: ["/^versions\\.yml$/"],
       // Matches a `# renovate: datasource=... depName=...` comment followed by
       // either `key: value` or a `- value` list item on the next line.
       matchStrings: [
