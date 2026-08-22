@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: ""
+      skip_pkgs_check:
+        description: "Skip the kernel/Talos pkgs-base cross-check"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -59,8 +64,8 @@ env:
 
 jobs:
   # Runs on every trigger, including pull requests. Seconds of runtime, and
-  # it catches "bumped Talos but forgot to tag the kernel" while the PR is
-  # still open.
+  # it catches "bumped Talos but forgot to rebase/tag the kernel" while the
+  # PR is still open.
   config:
     runs-on: ubuntu-latest
     outputs:
@@ -126,22 +131,39 @@ jobs:
           crane manifest "$KERNEL" > /tmp/manifest.json \
             || { echo "::error::kernel image not found: ${KERNEL} — was the pkgs tag pushed?"; exit 1; }
 
-          PLATFORMS=$(jq -r '.manifests[].platform.architecture' /tmp/manifest.json | sort | tr '\n' ' ')
-          echo "kernel platforms: ${PLATFORMS}"
-          case "$PLATFORMS" in
-            *amd64*arm64*) ;;
-            *) echo "::error::kernel manifest is not multi-arch: ${PLATFORMS}"; exit 1 ;;
-          esac
+          MEDIA=$(jq -r '.mediaType // "unknown"' /tmp/manifest.json)
+          # `[]?` tolerates a single-image manifest, which has no .manifests
+          # key at all — that is a real failure, not a jq error.
+          PLATFORMS=$(jq -r '[.manifests[]?.platform.architecture] | join(" ")' /tmp/manifest.json)
 
-          # Provenance recorded by the pkgs workflow; compared below against
-          # what this Talos release actually pins.
+          echo "mediaType: ${MEDIA}"
+          echo "platforms: ${PLATFORMS}"
+
+          MISSING=""
+          case " $PLATFORMS " in *" amd64 "*) ;; *) MISSING="amd64" ;; esac
+          case " $PLATFORMS " in *" arm64 "*) ;; *) MISSING="${MISSING} arm64" ;; esac
+          [ -z "$MISSING" ] || {
+            echo "::error::${KERNEL} is not multi-arch (mediaType=${MEDIA}, platforms='${PLATFORMS}', missing:${MISSING}). Did you tag a per-arch child instead of the index?"
+            exit 1
+          }
+
           BASE=$(jq -r '.annotations["dev.hoefling.pkgs-base"] // "unknown"' /tmp/manifest.json)
-          echo "kernel built from pkgs base: ${BASE}"
-          echo "| kernel pkgs base | \`${BASE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          LINUX=$(jq -r '.annotations["dev.hoefling.linux-version"] // "unknown"' /tmp/manifest.json)
+          {
+            echo "| kernel pkgs base | \`${BASE}\` |"
+            echo "| kernel linux | \`${LINUX}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # Cross-check the pairing that caused mismatched-component builds before:
-      # the kernel must come from the pkgs tag this Talos release pins.
+      # The pairing that produced mismatched-component builds before: the
+      # kernel must come from the pkgs commit this Talos release pins.
+      #
+      # Both sides are `git describe` strings, but the abbreviation length
+      # differs (Talos uses git's default, the kernel workflow may not), so
+      # the tag part is compared exactly and the SHA part by prefix.
       - name: Compare pkgs base against Talos PKGS
+        if: ${{ !inputs.skip_pkgs_check }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TALOS='${{ steps.cfg.outputs.talos_version }}'
@@ -150,18 +172,36 @@ jobs:
           PKGS=$(gh api "repos/siderolabs/talos/contents/Makefile?ref=${TALOS}" --jq '.content' \
                    | base64 -d | grep '^PKGS ?=' | awk '{print $3}')
           echo "Talos ${TALOS} pins PKGS=${PKGS}"
+          echo "kernel built from   ${BASE}"
 
           if [ "$BASE" = "unknown" ]; then
             echo "::warning::kernel image carries no pkgs-base annotation; cannot cross-check"
-          elif [ "$BASE" != "$PKGS" ]; then
-            # A warning rather than an error: `git describe` formatting can
-            # differ from the Makefile string in harmless ways.
-            echo "::warning::kernel built from ${BASE}, Talos ${TALOS} pins ${PKGS}"
-          else
-            echo "pkgs base matches"
+            exit 0
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # v1.13.0-60-gf541ca434ee6  ->  tag=v1.13.0-60  sha=f541ca434ee6
+          BASE_TAG="${BASE%-g*}";  BASE_SHA="${BASE##*-g}"
+          PKGS_TAG="${PKGS%-g*}";  PKGS_SHA="${PKGS##*-g}"
+
+          fail() {
+            echo "::error::kernel built from ${BASE}, Talos ${TALOS} pins ${PKGS} — rebase the pkgs fork onto ${PKGS_SHA} and re-tag"
+            exit 1
+          }
+
+          [ "$BASE_TAG" = "$PKGS_TAG" ] || fail
+
+          # One SHA is an abbreviation of the other; compare in whichever
+          # direction is shorter.
+          case "$BASE_SHA" in
+            "$PKGS_SHA"*) ;;
+            *) case "$PKGS_SHA" in
+                 "$BASE_SHA"*) ;;
+                 *) fail ;;
+               esac ;;
+          esac
+
+          echo "pkgs base matches"
+          echo "| pkgs base check | matches \`${PKGS}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   imager:
     needs: config
