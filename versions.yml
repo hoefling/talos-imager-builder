@@ -13,9 +13,12 @@ kernel_image: ghcr.io/hoefling/kernel:v1.13.9-2
 overlay_image: ghcr.io/siderolabs/sbc-raspberrypi:v0.2.0@sha256:f6f5504c0c2386e287f4ba29129e5099abaecdab3b8eb96b53aa53a163283c24
 
 extensions:
-  - ghcr.io/siderolabs/vc4:v1.13.8
   - ghcr.io/siderolabs/iscsi-tools:v0.2.0
   - ghcr.io/siderolabs/util-linux-tools:2.42.2
+
+# Ship kernel modules — tag must equal talos_version exactly.
+kernel_extensions:
+  - ghcr.io/siderolabs/vc4
 
 # Workaround for the pwm-fan state-0 bug: park at cooling level 1 from idle
 # so the broken zero-duty path is never entered. Remove once fixed upstream.

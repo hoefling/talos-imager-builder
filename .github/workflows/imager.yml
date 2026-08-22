@@ -94,7 +94,19 @@ jobs:
           OVERLAY="${{ inputs.overlay_image }}"
           [ -n "$OVERLAY" ] || OVERLAY=$(yq -r '.overlay_image' versions.yml)
 
+          # Userspace extensions: versioned independently, pinned in the file.
           EXT=$(yq -r '.extensions[] | "--system-extension-image " + .' versions.yml | tr '\n' ' ')
+
+          # Extensions that ship kernel modules must match the Talos kernel
+          # exactly, so their tag is derived rather than pinned. Listing one
+          # with a tag in versions.yml is how vc4:v1.13.8 ended up against a
+          # 6.18.44 kernel.
+          KEXT=$(TALOS="$TALOS" yq -r \
+            '.kernel_extensions[]? | "--system-extension-image " + . + ":" + strenv(TALOS)' \
+            versions.yml | tr '\n' ' ')
+
+          EXT="${EXT}${KEXT}"
+
           APPEND=$(yq -r '.config_txt_append' versions.yml)
 
           {
@@ -114,6 +126,7 @@ jobs:
             echo "| talos | \`${TALOS}\` |"
             echo "| kernel | \`${KERNEL}\` |"
             echo "| overlay | \`${OVERLAY}\` |"
+            echo "| extensions | \`${EXT}\` |"
             echo "| configTxtAppend | \`${APPEND}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
