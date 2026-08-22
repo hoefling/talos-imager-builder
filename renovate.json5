@@ -50,13 +50,16 @@
     {
       // Sidero-published components. Safe to take on their own.
       matchPackageNames: [
-        "ghcr.io/siderolabs/sbc-raspberrypi",
         "ghcr.io/siderolabs/vc4",
         "ghcr.io/siderolabs/iscsi-tools",
         "ghcr.io/siderolabs/util-linux-tools",
       ],
-      groupName: "sidero overlay + extensions",
+      groupName: "sidero extensions",
       automerge: false,
+    },
+    {
+      matchPackageNames: ["ghcr.io/siderolabs/sbc-raspberrypi"],
+      pinDigests: true,
     },
     {
       // Pin GitHub Actions to SHAs so a compromised tag cannot alter builds.
