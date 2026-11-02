@@ -7,7 +7,7 @@ talos_version: v1.14.5
 # Own kernel build. Pinned by digest on a floating tag so Renovate bumps the
 # digest whenever the pkgs workflow republishes `rp1pwm`.
 # renovate: datasource=docker depName=ghcr.io/hoefling/kernel versioning=semver
-kernel_image: ghcr.io/hoefling/kernel:v1.14.5-1
+kernel_image: ghcr.io/hoefling/kernel:v1.14.5-1@sha256:8202ee00bdc0f26ef62f3fd254daeb05a25cbbe3f62b02b2d1591466eed36a3e
 
 # renovate: datasource=docker depName=ghcr.io/siderolabs/sbc-raspberrypi
 overlay_image: ghcr.io/siderolabs/sbc-raspberrypi:v0.2.2@sha256:af82d9f97241fb66c5b660b03e9154fd54ba4560b58ed3b53765bb930d564167
