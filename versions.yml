@@ -10,7 +10,7 @@ talos_version: v1.14.5
 kernel_image: ghcr.io/hoefling/kernel:v1.14.5-1
 
 # renovate: datasource=docker depName=ghcr.io/siderolabs/sbc-raspberrypi
-overlay_image: ghcr.io/siderolabs/sbc-raspberrypi:v0.2.2@sha256:f6f5504c0c2386e287f4ba29129e5099abaecdab3b8eb96b53aa53a163283c24
+overlay_image: ghcr.io/siderolabs/sbc-raspberrypi:v0.2.2@sha256:af82d9f97241fb66c5b660b03e9154fd54ba4560b58ed3b53765bb930d564167
 
 extensions:
   - ghcr.io/siderolabs/iscsi-tools:v0.2.0
