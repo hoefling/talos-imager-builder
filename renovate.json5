@@ -13,7 +13,7 @@
         // Image refs: `key: image:tag[@sha256:…]` or `- image:tag[@sha256:…]`
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+(?:\\w+:\\s*|-\\s+)[^\\s:@]+:(?<currentValue>[^\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?",
         // Plain versions: `key: v1.2.3` (no '/', ':' or '@', so image lines can't match)
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+\\w+:\\s*(?<currentValue>[^\\s:/@]+)(?=\\s|$)",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+\\w+:\\s*(?<currentValue>[^\\s:/@]+)(?:\\s|$)",
       ],
       datasourceTemplate: "{{{datasource}}}",
       versioningTemplate: "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}",
