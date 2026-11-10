@@ -216,6 +216,25 @@ jobs:
           echo "pkgs base matches"
           echo "| pkgs base check | matches \`${PKGS}\` |" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify extension pins against release index
+        shell: bash
+        run: |
+          set -euo pipefail
+          talos=$(yq '.talos_version' versions.yml)
+          crane export "ghcr.io/siderolabs/extensions:${talos}" - | tar x -O image-digests > image-digests
+          fail=0
+          for ref in $(yq '.extensions[]' versions.yml); do
+            if grep -qxF "$ref" image-digests; then
+              echo "ok  $ref"
+            else
+              name=${ref%%[:@]*}
+              want=$(grep -E "^${name//./\\.}:" image-digests || echo "<not in index>")
+              echo "::error::${ref} does not match extensions:${talos} — expected ${want}"
+              fail=1
+            fi
+          done
+          exit $fail
+
   imager:
     needs: config
     if: github.event_name != 'pull_request'
