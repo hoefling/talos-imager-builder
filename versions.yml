@@ -13,8 +13,8 @@ kernel_image: ghcr.io/hoefling/kernel:v1.14.5-1@sha256:8202ee00bdc0f26ef62f3fd25
 overlay_image: ghcr.io/siderolabs/sbc-raspberrypi:v0.2.2@sha256:af82d9f97241fb66c5b660b03e9154fd54ba4560b58ed3b53765bb930d564167
 
 extensions:
-  - ghcr.io/siderolabs/iscsi-tools:v0.2.0
-  - ghcr.io/siderolabs/util-linux-tools:2.42.2
+  - ghcr.io/siderolabs/iscsi-tools:v0.2.0@sha256:5c887effab3457700938b66b4de1ebd89f1c5025f20fd3a07b095d2994eec0fa
+  - ghcr.io/siderolabs/util-linux-tools:2.42.2@sha256:f93f23e96b28e00228cf9a006a15c1648bd5975be989adb1bee6c05c046001a1
 
 # Ship kernel modules — tag must equal talos_version exactly.
 kernel_extensions:
