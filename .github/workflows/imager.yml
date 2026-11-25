@@ -256,6 +256,27 @@ jobs:
         id: rev
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
+      # WORKAROUND: github.com/ONSdigital/dp-mocking was deleted and pulled
+      # from proxy.golang.org; Talos' tools module still reaches it via
+      # dis-vulncheck on release-1.14. Fixed on main in siderolabs/talos@72085fbf.
+      # Self-retiring: does nothing once the checked-out Talos no longer
+      # references ONSdigital. Delete this step after the first release that
+      # contains the fix.
+      - name: Stub out deleted dp-mocking module
+        run: |
+          set -euo pipefail
+          if ! grep -q 'github.com/ONSdigital/' tools/go.mod; then
+            echo "Talos no longer depends on ONSdigital modules; workaround not needed"
+            exit 0
+          fi
+          mkdir -p tools/hack/dp-mocking-stub
+          printf 'module github.com/ONSdigital/dp-mocking\n\ngo 1.22\n' \
+            > tools/hack/dp-mocking-stub/go.mod
+          printf '\nreplace github.com/ONSdigital/dp-mocking => ./tools/hack/dp-mocking-stub\n' >> go.work
+          # Keep `git describe --dirty` clean, so the embedded SHA stays 55021d7c rather than 55021d7c-dirty
+          git update-index --assume-unchanged go.work
+          echo "::warning::Applied dp-mocking stub workaround (siderolabs/talos@72085fbf not in ${{ needs.config.outputs.talos_version }})"
+
       - name: Free disk space
         run: |
           df -h /
